@@ -30,6 +30,15 @@ class PeerPatchCLI:
             target = args[2]
             self.network.clone_from_peer(target, self.node_name)
 
+        elif command == "sync":
+            if len(args) == 3:
+                # User typed: peerp sync alice_node
+                target = args[2]
+                self.network.sync(target)
+            else:
+                # User typed: peerp sync
+                self.network.sync()
+
         elif command in ["add", "status", "log", "commit"]:
             self.git.passthrough(command, args[2:])
 

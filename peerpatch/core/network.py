@@ -1,11 +1,31 @@
 import paramiko
 import hashlib
+import os
+import json
 
 
 class P2PNetwork:
     def __init__(self, git_engine, identity_manager):
         self.git = git_engine
         self.identity = identity_manager
+        self.peers_file = os.path.join(self.identity.config_dir, "peers.json")
+
+    def _add_to_address_book(self, peer_address):
+        """Saves a known peer to the local routing table."""
+        peers = []
+        if os.path.exists(self.peers_file):
+            with open(self.peers_file, "r") as f:
+                try:
+                    peers = json.load(f)
+                except json.JSONDecodeError:
+                    pass
+
+        # Only add them if we don't already know them
+        if peer_address not in peers:
+            peers.append(peer_address)
+            with open(self.peers_file, "w") as f:
+                json.dump(peers, f, indent=2)
+            print(f"[*] Added {peer_address} to local Address Book.")
 
     def clone_from_peer(self, target_peer, node_name):
         """Connects to a remote peer and clones their repository state."""
@@ -66,6 +86,9 @@ class P2PNetwork:
                 print(
                     f"[+] Repository successfully cloned and aligned to {target_peer}."
                 )
+
+                # --- Save the peer we just cloned from to our Address Book ---
+                self._add_to_address_book(target_peer)
             else:
                 print(
                     f"[*] {target_peer} has an initialized, but empty repository. Nothing to checkout."
@@ -75,3 +98,45 @@ class P2PNetwork:
             print(f"[-] P2P Clone transaction failed. Error: {e}")
         finally:
             ssh.close()
+
+    def sync(self, target_peer=None):
+        """Pushes local commits to peers. If no target, broadcasts to all known peers."""
+        my_peer_id = self.identity.get_peer_id()
+        if not my_peer_id:
+            print("[-] Local identity not found. Cannot sync.")
+            return
+
+        targets = []
+        if target_peer:
+            # Manual override: Sync to a specific peer
+            targets.append(target_peer)
+        else:
+            # Automatic broadcast: Read from the Address Book
+            if os.path.exists(self.peers_file):
+                with open(self.peers_file, "r") as f:
+                    try:
+                        targets = json.load(f)
+                    except json.JSONDecodeError:
+                        pass
+
+            if not targets:
+                print(
+                    "[-] No known peers in Address Book. Specify a target manually (e.g., peerp sync alice_node)."
+                )
+                return
+
+            print(f"[*] Broadcasting local state to {len(targets)} known peer(s)...")
+
+        for peer in targets:
+            print(f"[*] Syncing namespace upstream to: {peer}...")
+            try:
+                self.git.run_with_output(
+                    [
+                        "push",
+                        f"ssh://root@{peer}/app/storage",
+                        f"refs/heads/*:refs/namespaces/{my_peer_id}/heads/*",
+                    ]
+                )
+                print(f"[+] Successfully synchronized state with {peer}.")
+            except Exception as e:
+                print(f"[-] Sync to {peer} failed. Error: {e}")

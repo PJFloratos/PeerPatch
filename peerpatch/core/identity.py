@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
 
@@ -22,6 +23,16 @@ class IdentityManager:
             print("[*] Cryptographic identity already exists.")
 
         self._initialize_trust_anchor(node_name)
+
+    def get_peer_id(self):
+        """Returns the 20-character hash of the local public key."""
+        if not os.path.exists(self.public_key_path):
+            return None
+
+        with open(self.public_key_path, "r") as f:
+            pub_key_str = f.read().strip()
+
+        return hashlib.sha256(pub_key_str.encode()).hexdigest()[:20]
 
     def _generate_keys(self):
         """Internal method to handle cryptographic generation."""
