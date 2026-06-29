@@ -4,46 +4,54 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
 
 
-CONFIG_DIR = "/app/storage/.peerpatch"
+class IdentityManager:
+    def __init__(self, config_dir="/app/storage/.peerpatch"):
+        self.config_dir = config_dir
+        self.private_key_path = os.path.join(self.config_dir, "id_ed25519")
+        self.public_key_path = os.path.join(self.config_dir, "id_ed25519.pub")
+        self.trust_file_path = os.path.join(self.config_dir, "trust.json")
 
+    def setup_identity(self, node_name):
+        """Generates Ed25519 identity and genesis trust document."""
+        os.makedirs(self.config_dir, exist_ok=True)
 
-def setup_identity(node_name):
-    """Generates Ed25519 identity and genesis trust document."""
-    os.makedirs(CONFIG_DIR, exist_ok=True)
+        if not os.path.exists(self.private_key_path):
+            self._generate_keys()
+            print("[+] Generated new cryptographic Ed25519 identity.")
+        else:
+            print("[*] Cryptographic identity already exists.")
 
-    private_key_path = os.path.join(CONFIG_DIR, "id_ed25519")
-    public_key_path = os.path.join(CONFIG_DIR, "id_ed25519.pub")
+        self._initialize_trust_anchor(node_name)
 
-    if not os.path.exists(private_key_path):
+    def _generate_keys(self):
+        """Internal method to handle cryptographic generation."""
         private_key = ed25519.Ed25519PrivateKey.generate()
         public_key = private_key.public_key()
 
-        with open(private_key_path, "wb") as f:
-            f.write(private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.OpenSSH,
-                encryption_algorithm=serialization.NoEncryption()
-            ))
+        with open(self.private_key_path, "wb") as f:
+            f.write(
+                private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.OpenSSH,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+            )
 
-        with open(public_key_path, "wb") as f:
-            f.write(public_key.public_bytes(
-                encoding=serialization.Encoding.OpenSSH,
-                format=serialization.PublicFormat.OpenSSH
-            ))
-        print("[+] Generated new cryptographic Ed25519 identity.")
-    else:
-        print("[*] Cryptographic identity already exists.")
+        with open(self.public_key_path, "wb") as f:
+            f.write(
+                public_key.public_bytes(
+                    encoding=serialization.Encoding.OpenSSH,
+                    format=serialization.PublicFormat.OpenSSH,
+                )
+            )
 
-    with open(public_key_path, "r") as f:
-        pub_key_str = f.read().strip()
+    def _initialize_trust_anchor(self, node_name):
+        """Builds the Genesis trust document."""
+        with open(self.public_key_path, "r") as f:
+            pub_key_str = f.read().strip()
 
-    trust_data = {
-        "threshold": 1,
-        "delegates": {
-            pub_key_str: node_name
-        }
-    }
+        trust_data = {"threshold": 1, "delegates": {pub_key_str: node_name}}
 
-    with open(os.path.join(CONFIG_DIR, "trust.json"), "w") as f:
-        json.dump(trust_data, f, indent=2)
-    print(f"[+] Web of Trust initialized for {node_name}.")
+        with open(self.trust_file_path, "w") as f:
+            json.dump(trust_data, f, indent=2)
+        print(f"[+] Web of Trust initialized for {node_name}.")

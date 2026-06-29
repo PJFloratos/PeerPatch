@@ -3,70 +3,98 @@ import subprocess
 import sys
 
 
-REPO_DIR = "/app/storage"
+class GitEngine:
+    def __init__(self, repo_dir="/app/storage"):
+        self.repo_dir = repo_dir
+        self.git_env = os.environ.copy()
+        self.git_env["GIT_SSH_COMMAND"] = (
+            "sshpass -p peerpatch123 ssh -o StrictHostKeyChecking=no"
+        )
 
-def run_git_quiet(args):
-    """Helper to run git commands quietly in the background."""
-    subprocess.run(["git", "-C", REPO_DIR] + args, capture_output=True, check=True)
+    def _execute(self, args, capture=True, exit_on_fail=False):
+        """Master method to handle all subprocess Git executions."""
+        full_command = ["git", "-C", self.repo_dir] + args
 
-def init_git_repo(node_name):
-    """Initializes standard Git directory."""
-    # Initialize Git
-    if not os.path.exists(os.path.join(REPO_DIR, ".git")):
-        subprocess.run(["git", "init", "--initial-branch=main", REPO_DIR], check=True)
-        print("[+] Native Git repository initialized.")
-    else:
-        print("[*] Git repository already exists.")
-
-    # Configure local Git identity automatically using the node name
-    try:
-        run_git_quiet(["config", "user.name", node_name])
-        run_git_quiet(["config", "user.email", f"{node_name}@peerpatch.local"])
-    except subprocess.CalledProcessError:
-        pass # Gracefully ignore if config fails
-
-    # Secure the PeerPatch config via .gitignore
-    gitignore_path = os.path.join(REPO_DIR, ".gitignore")
-    ignore_entry = ".peerpatch/\n"
-    needs_commit = False
-
-    # Check if .gitignore exists to either create or append
-    if os.path.exists(gitignore_path):
-        with open(gitignore_path, "r") as f:
-            content = f.read()
-
-        # Only append if it's not already in the file
-        if ".peerpatch" not in content:
-            with open(gitignore_path, "a") as f:
-                f.write(f"\n# PeerPatch Tracking\n{ignore_entry}")
-            print("[+] Appended .peerpatch/ to existing .gitignore.")
-            needs_commit = True
-    else:
-        # Create a fresh .gitignore
-        with open(gitignore_path, "w") as f:
-            f.write(f"# PeerPatch Tracking\n{ignore_entry}")
-        print("[+] Created .gitignore to secure .peerpatch/ config.")
-        needs_commit = True
-
-    # Automatically commit the .gitignore
-    if needs_commit:
         try:
-            run_git_quiet(["add", ".gitignore"])
-            run_git_quiet(["commit", "-m", "chore: secure PeerPatch identity tracking"])
-            print("[+] Automatically committed .gitignore security rules.")
+            result = subprocess.run(
+                full_command,
+                capture_output=capture,
+                text=True if capture else False,
+                env=self.git_env,
+                check=exit_on_fail,
+            )
+
+            # If we are capturing, handle the output and graceful errors
+            if capture:
+                if not exit_on_fail and result.returncode != 0:
+                    print(f"[-] Git Error: {result.stderr.strip()}")
+                return result.stdout.strip() if result.stdout else ""
+
         except subprocess.CalledProcessError:
-            print("[-] Failed to auto-commit .gitignore. Please commit manually.")
+            # If we are streaming to terminal (passthrough), Git already printed the error
+            if not capture:
+                sys.exit(1)
+            raise  # Re-raise if it was a background task that faile
 
+    def run_quiet(self, args):
+        """Helper to run git commands quietly in the background. Used Inernally"""
+        self._execute(args, capture=True, exit_on_fail=True)
 
-def passthrough_git(git_command, args):
-    """Passes commands directly to the native Git engine."""
-    # We combine 'git', the repo directory flag, the command (e.g., 'add'), and any user arguments
-    full_command = ["git", "-C", REPO_DIR, git_command] + args
+    def run_with_output(self, args):
+        """Helper to run git commands and capture output as a string. Used by Network"""
+        return self._execute(args, capture=True, exit_on_fail=False)
 
-    # We don't capture output here; we let Git print directly to the user's terminal
-    # so they get all the native colored formatting and error messages.
-    try:
-        subprocess.run(full_command, check=True)
-    except subprocess.CalledProcessError:
-        # Git already printed the error to the screen, so we just gracefully exit
-        sys.exit(1)
+    def passthrough(self, git_command, args):
+        """Passes commands directly to the native Git engine. Only using in CLI"""
+        self._execute([git_command] + args, capture=False, exit_on_fail=True)
+
+    def initialize_workspace(self, node_name):
+        """Initializes standard Git directory, configures user, and secures tracking."""
+        if not os.path.exists(os.path.join(self.repo_dir, ".git")):
+            subprocess.run(
+                ["git", "init", "--initial-branch=main", self.repo_dir], check=True
+            )
+            print("[+] Native Git repository initialized.")
+        else:
+            print("[*] Git repository already exists.")
+
+        self.configure_profile(node_name)
+        self._secure_gitignore()
+
+    def configure_profile(self, node_name):
+        """Configures local Git identity."""
+        try:
+            self.run_quiet(["config", "user.name", node_name])
+            self.run_quiet(["config", "user.email", f"{node_name}@peerpatch.local"])
+        except subprocess.CalledProcessError:
+            pass
+
+    def _secure_gitignore(self):
+        """Ensures .peerpatch is ignored to protect private keys."""
+        gitignore_path = os.path.join(self.repo_dir, ".gitignore")
+        ignore_entry = ".peerpatch/\n"
+        needs_commit = False
+
+        if os.path.exists(gitignore_path):
+            with open(gitignore_path, "r") as f:
+                content = f.read()
+            if ".peerpatch" not in content:
+                with open(gitignore_path, "a") as f:
+                    f.write(f"\n# PeerPatch Tracking\n{ignore_entry}")
+                print("[+] Appended .peerpatch/ to existing .gitignore.")
+                needs_commit = True
+        else:
+            with open(gitignore_path, "w") as f:
+                f.write(f"# PeerPatch Tracking\n{ignore_entry}")
+            print("[+] Created .gitignore to secure .peerpatch/ config.")
+            needs_commit = True
+
+        if needs_commit:
+            try:
+                self.run_quiet(["add", ".gitignore"])
+                self.run_quiet(
+                    ["commit", "-m", "chore: secure PeerPatch identity tracking"]
+                )
+                print("[+] Automatically committed .gitignore security rules.")
+            except subprocess.CalledProcessError:
+                print("[-] Failed to auto-commit .gitignore. Please commit manually.")
