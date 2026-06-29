@@ -1,0 +1,34 @@
+services:
+  alice_node:
+    build: .
+    container_name: alice_node
+    environment:
+      - NODE_NAME=alice_node
+    volumes:
+      - ./nodes/alice_data:/app/storage
+    networks:
+      - peerp_network
+
+  bob_node:
+    build: .
+    container_name: bob_node
+    environment:
+      - NODE_NAME=bob_node
+    volumes:
+      - ./nodes/bob_data:/app/storage
+    networks:
+      - peerp_network
+
+  charlie_node:
+    build: .
+    container_name: charlie_node
+    environment:
+      - NODE_NAME=charlie_node
+    volumes:
+      - ./nodes/charlie_data:/app/storage
+    networks:
+      - peerp_network
+
+networks:
+  peerp_network:
+    driver: bridge
