@@ -116,3 +116,32 @@ class ConsensusEngine:
         if code_updated:
             self.git.run_quiet(["checkout", "main", "--force"])
             print("[+] Working directory successfully updated with new canonical code.")
+
+    def has_pending_governance(self):
+        """Checks if there are un-evaluated constitution updates from the Owner."""
+        if not os.path.exists(self.identity.trust_file_path):
+            return False
+
+        with open(self.identity.trust_file_path, "r") as f:
+            trust_data = json.load(f)
+
+        owner_pub_key = trust_data.get("owner")
+        if not owner_pub_key:
+            return False
+
+        owner_namespace = hashlib.sha256(owner_pub_key.encode()).hexdigest()[:20]
+        owner_gov_ref = f"refs/namespaces/{owner_namespace}/meta/identity"
+
+        # Check what the owner's branch says vs our current canonical branch
+        owner_hash = self.git.run_with_output(
+            ["rev-parse", "--quiet", "--verify", owner_gov_ref]
+        )
+        current_gov_hash = self.git.run_with_output(
+            ["rev-parse", "--quiet", "--verify", "refs/meta/identity"]
+        )
+
+        # If the owner has a new hash we haven't evaluated, return True
+        if owner_hash and owner_hash != current_gov_hash:
+            return True
+
+        return False

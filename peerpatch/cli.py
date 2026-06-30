@@ -96,7 +96,20 @@ class PeerPatchCLI:
                 # User typed: peerp sync
                 self.network.sync()
 
-        elif command in ["add", "status", "log", "commit"]:
+        elif command == "commit":
+            if self.consensus.has_pending_governance():
+                print("\n[-] Pending Network Topology Updates Detected!")
+                print("[-] You have received a new constitution from the network.")
+                print(
+                    "[-] You MUST run 'peerp consensus' to mathematically verify and accept"
+                )
+                print("[-] the new Delegates before you are allowed to commit code.\n")
+                return
+
+            # If safe, pass it to Git
+            self.git.passthrough("commit", args[2:])
+
+        elif command in ["add", "status", "log"]:
             self.git.passthrough(command, args[2:])
 
         elif command in ["rm", "remove"]:
