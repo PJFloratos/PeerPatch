@@ -114,6 +114,21 @@ class ConsensusEngine:
         )
 
         if code_updated:
+            # 1. Check if the working directory is clean
+            status = self.git.run_with_output(["status", "--porcelain"])
+
+            if status:
+                print("\n[-] ⚠️  CONSENSUS REACHED, BUT WORKING DIRECTORY IS DIRTY.")
+                print(
+                    "[-] You have uncommitted changes. To update your working directory to the"
+                )
+                print(
+                    "[-] new canonical state, please 'commit' or 'stash' your changes first."
+                )
+                print("[-] Then run 'peerp consensus' again to perform the checkout.\n")
+                return  # Stop here, do not perform the forced checkout
+
+            # 2. If clean, perform the safe update
             self.git.run_quiet(["checkout", "main", "--force"])
             print("[+] Working directory successfully updated with new canonical code.")
 
