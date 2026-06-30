@@ -25,5 +25,9 @@ RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/
 # Bake the ENTIRE project folder into the container
 COPY . /app/
 
+# Create a wrapper script named 'peerp'
+RUN echo '#!/bin/sh\npython3 /app/peerp.py "$@"' > /usr/local/bin/peerp && \
+    chmod +x /usr/local/bin/peerp
+
 # Simple startup command to launch SSH daemon and stay alive
 ENTRYPOINT /usr/sbin/sshd && tail -f /dev/null
