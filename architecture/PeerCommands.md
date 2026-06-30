@@ -36,6 +36,10 @@ These commands manage the movement of raw data between nodes.
 1. **Phase 1 (Governance):** Verifies the Owner's signature on the `meta/identity` branch. If valid, it updates the local constitution. If the rules changed, it halts to prevent processing code under outdated rules.
 2. **Phase 2 (Code):** Evaluates the `heads/main` namespace. It tallies votes from all active Delegates. If the number of votes for a specific commit hash meets the current `threshold`, it fast-forwards the canonical `main` branch.
 
+It is an idempotent, side-effect-free audit.
+* If Quorum is NOT met: The command prints the current tally (Delegate A votes for X, Delegate B votes for Y) and returns False. It modifies absolutely nothing. It is purely an informational "status update" on the network's state.
+* If Quorum IS met: It performs a single, atomic operation: it moves the local refs/heads/main pointer to match the consensus_hash and forces the working directory to update.
+
 
 
 ### 5. Standard Git Porcelain
@@ -44,3 +48,25 @@ These commands are pass-throughs to native Git, allowing the user to manage thei
 
 * **`commit`**: Includes a **security guardrail**. Before the commit is executed, it runs `has_pending_governance`. If the node has received a new constitution that hasn't been evaluated via `consensus` yet, the commit is blocked to prevent working on a stale network topology.
 * **`add` / `rm` / `status` / `log**`: Standard Git operations to manage the local working directory.
+
+
+---
+
+### The PeerPatch Lifecycle
+
+Your system currently functions in three distinct, disconnected layers. To complete the "Merge" successfully, a human (or automated agent) must bridge them:
+
+1. **The Transport Layer (`sync` / `broadcast`):** This is purely for **Data Availability**. It ensures that the commit object `258952d` exists on every Delegate's hard drive. It is a "push" mechanism.
+2. **The Human Layer (`review` / `vote`):** This is the **Validation** step. The `vote` command you just added is the formal declaration that a Delegate has inspected the data and wants it to become the "Official Canonical Truth."
+3. **The Consensus Layer (`consensus`):** This is the **Finalization**. It is a pure math engine that ignores all data not explicitly "voted" for. It calculates if the votes meet the threshold and, if so, irreversibly moves the `main` pointer forward.
+
+---
+
+### Why this is a "Feature," not a "Bug"
+
+You might be thinking: *"This is a lot of manual work. Can't we automate the `vote`?"*
+
+If you automate the `vote` (e.g., have the consensus engine automatically vote for the latest commit pushed to the machine), you lose the primary security benefit of your design. Here is why:
+
+* **If you automate voting:** You have built a **"Follower" network.** If a Delegate gets hacked and an attacker pushes malicious code, the Delegate would "vote" for the malware, reaching quorum and destroying the network.
+* **With manual voting:** You have built a **"Governance" network.** A Delegate must actively run a command (`vote`) to sign off on a commit. They are acting as a cryptographic witness, not a passive storage drive.
