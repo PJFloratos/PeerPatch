@@ -58,11 +58,72 @@ class IdentityManager:
 
     def _initialize_trust_anchor(self, node_name):
         """Builds the Genesis trust document."""
+        if os.path.exists(self.trust_file_path):
+            print("[*] Network Trust Anchor found. Skipping local genesis creation.")
+            return
+
         with open(self.public_key_path, "r") as f:
             pub_key_str = f.read().strip()
 
-        trust_data = {"threshold": 1, "delegates": {pub_key_str: node_name}}
+        trust_data = {
+            "version": "2.0",
+            "owner": pub_key_str,
+            "threshold": 1,
+            "delegates": {pub_key_str: node_name},
+        }
 
         with open(self.trust_file_path, "w") as f:
             json.dump(trust_data, f, indent=2)
         print(f"[+] Web of Trust initialized for {node_name}.")
+
+    def propose_governance_change(
+        self, action, pub_key=None, name=None, threshold=None
+    ):
+        """Modifies the local trust.json to prepare a governance proposal."""
+        if not os.path.exists(self.trust_file_path):
+            print("[-] No trust.json found to modify.")
+            return False
+
+        with open(self.trust_file_path, "r") as f:
+            trust_data = json.load(f)
+
+        # --- Cryptographic Authorization Check ---
+        if not os.path.exists(self.public_key_path):
+            print("[-] Local public key not found.")
+            return False
+
+        with open(self.public_key_path, "r") as f:
+            my_pub_key = f.read().strip()
+
+        is_owner = trust_data.get("owner") == my_pub_key
+
+        if not is_owner:
+            print("[-] UNAUTHORIZED: Only the Owner can propose governance changes.")
+            return False
+
+        # 2. Process the Action
+        if action == "add_delegate" and pub_key and name:
+            trust_data["delegates"][pub_key] = name
+            print(f"[*] Proposed adding Delegate: {name}")
+        elif action == "remove_delegate" and pub_key:
+            if pub_key in trust_data["delegates"]:
+                del trust_data["delegates"][pub_key]
+                print(f"[*] Proposed removing Delegate: {pub_key[:15]}...")
+        else:
+            print("[-] Invalid governance action.")
+            return False
+
+        # 3. Dynamic Threshold Calculation (> 50% Majority)
+        delegate_count = len(trust_data["delegates"])
+        new_threshold = (delegate_count // 2) + 1
+
+        trust_data["threshold"] = new_threshold
+        print(
+            f"[*] Dynamic Threshold recalculated: {new_threshold}/{delegate_count} required for Consensus."
+        )
+
+        # 4. Save to disk
+        with open(self.trust_file_path, "w") as f:
+            json.dump(trust_data, f, indent=2)
+
+        return True

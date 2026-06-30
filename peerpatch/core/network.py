@@ -10,22 +10,47 @@ class P2PNetwork:
         self.identity = identity_manager
         self.peers_file = os.path.join(self.identity.config_dir, "peers.json")
 
-    def _add_to_address_book(self, peer_address):
-        """Saves a known peer to the local routing table."""
-        peers = []
-        if os.path.exists(self.peers_file):
-            with open(self.peers_file, "r") as f:
-                try:
-                    peers = json.load(f)
-                except json.JSONDecodeError:
-                    pass
+    def _read_address_book(self):
+        """Address book now ONLY tracks downstream nodes for broadcasting."""
+        default_book = {"downstream_nodes": []}
+
+        if not os.path.exists(self.peers_file):
+            return default_book
+
+        with open(self.peers_file, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return default_book
+
+    def _write_address_book(self, data):
+        """Saves the address book to disk."""
+        with open(self.peers_file, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def add_to_address_book(self, peer_address, role="upstream_delegates"):
+        """Saves a known peer to a specific routing category."""
+        book = self._read_address_book()
+
+        if role not in book:
+            book[role] = []
 
         # Only add them if we don't already know them
-        if peer_address not in peers:
-            peers.append(peer_address)
-            with open(self.peers_file, "w") as f:
-                json.dump(peers, f, indent=2)
-            print(f"[*] Added {peer_address} to local Address Book.")
+        if peer_address not in book[role]:
+            book[role].append(peer_address)
+            self._write_address_book(book)
+            print(f"[*] Added {peer_address} to Address Book as '{role}'.")
+
+    def remove_from_address_book(self, peer_address):
+        """Removes a peer from the downstream subscriber list."""
+        book = self._read_address_book()
+
+        if peer_address in book.get("downstream_nodes", []):
+            book["downstream_nodes"].remove(peer_address)
+            self._write_address_book(book)
+            print(
+                f"[*] Cleaned routing table: {peer_address} removed from downstream broadcasts."
+            )
 
     def clone_from_peer(self, target_peer, node_name):
         """Connects to a remote peer and clones their repository state."""
@@ -59,6 +84,16 @@ class P2PNetwork:
 
             # 3. Stream Git objects via SSH
             print("[*] Streaming Git objects from peer...")
+            # --- Fetch the Constitution First ---
+            self.git.run_with_output(
+                [
+                    "fetch",
+                    f"ssh://root@{target_peer}/app/storage",
+                    "refs/meta/identity:refs/meta/identity",
+                ]
+            )
+            self.git.extract_trust_anchor()
+
             self.git.run_with_output(
                 [
                     "fetch",
@@ -87,8 +122,42 @@ class P2PNetwork:
                     f"[+] Repository successfully cloned and aligned to {target_peer}."
                 )
 
-                # --- Save the peer we just cloned from to our Address Book ---
-                self._add_to_address_book(target_peer)
+                # --- THE DYNAMIC HUB HANDSHAKE ---
+                print("[*] Reading Global Constitution for logical network topology...")
+                trust_file = self.identity.trust_file_path
+
+                if os.path.exists(trust_file):
+                    with open(trust_file, "r") as f:
+                        trust_data = json.load(f)
+
+                    delegates = list(trust_data.get("delegates", {}).values())
+                    print(
+                        f"[*] Registering as a Contributor with {len(delegates)} official Delegate Hub(s)..."
+                    )
+
+                    for delegate_host in delegates:
+                        if delegate_host == node_name:
+                            continue  # Don't SSH into ourselves
+                        try:
+                            hub_ssh = paramiko.SSHClient()
+                            hub_ssh.set_missing_host_key_policy(
+                                paramiko.AutoAddPolicy()
+                            )
+                            hub_ssh.connect(
+                                hostname=delegate_host,
+                                port=22,
+                                username="root",
+                                password="peerpatch123",
+                            )
+                            hub_ssh.exec_command(
+                                f"python3 /app/peerp.py register downstream_nodes {node_name}"
+                            )
+                            hub_ssh.close()
+                            print(
+                                f"    -> Handshake complete with Hub: {delegate_host}"
+                            )
+                        except Exception as e:
+                            print(f"    -> Handshake failed with {delegate_host}: {e}")
             else:
                 print(
                     f"[*] {target_peer} has an initialized, but empty repository. Nothing to checkout."
@@ -99,44 +168,102 @@ class P2PNetwork:
         finally:
             ssh.close()
 
+    def _push_namespace(self, my_peer_id, target_peer):
+        """Helper to push the local namespace to a specific peer."""
+        try:
+            # 1. Push the Code
+            self.git.run_with_output(
+                [
+                    "push",
+                    "--force",
+                    f"ssh://root@{target_peer}/app/storage",
+                    f"refs/heads/*:refs/namespaces/{my_peer_id}/heads/*",
+                ]
+            )
+
+            # 2. Push Governance Proposals (if they exist)
+            # We check locally first so Git doesn't throw a "src refspec missing" error
+            local_gov = self.git.run_with_output(
+                [
+                    "rev-parse",
+                    "--quiet",
+                    "--verify",
+                    f"refs/namespaces/{my_peer_id}/meta/identity",
+                ]
+            )
+
+            if local_gov:
+                self.git.run_with_output(
+                    [
+                        "push",
+                        "--force",
+                        f"ssh://root@{target_peer}/app/storage",
+                        f"refs/namespaces/{my_peer_id}/meta/identity:refs/namespaces/{my_peer_id}/meta/identity",
+                    ]
+                )
+
+            print(f"[+] Successfully synchronized state with {target_peer}.")
+        except Exception as e:
+            print(f"[-] Sync to {target_peer} failed. Error: {e}")
+
     def sync(self, target_peer=None):
-        """Pushes local commits to peers. If no target, broadcasts to all known peers."""
+        """Pushes local commits upstream by reading the cryptographic constitution."""
         my_peer_id = self.identity.get_peer_id()
         if not my_peer_id:
             print("[-] Local identity not found. Cannot sync.")
             return
 
-        targets = []
         if target_peer:
-            # Manual override: Sync to a specific peer
-            targets.append(target_peer)
-        else:
-            # Automatic broadcast: Read from the Address Book
-            if os.path.exists(self.peers_file):
-                with open(self.peers_file, "r") as f:
-                    try:
-                        targets = json.load(f)
-                    except json.JSONDecodeError:
-                        pass
+            print(f"[*] Syncing namespace directly to: {target_peer}...")
+            self._push_namespace(my_peer_id, target_peer)
+            return
 
-            if not targets:
-                print(
-                    "[-] No known peers in Address Book. Specify a target manually (e.g., peerp sync alice_node)."
-                )
-                return
+        # THE FLAT EDGE: Read upstream routing directly from the math (trust.json)
+        trust_file = self.identity.trust_file_path
+        if not os.path.exists(trust_file):
+            print("[-] No constitution found. Cannot discover Delegates.")
+            return
 
-            print(f"[*] Broadcasting local state to {len(targets)} known peer(s)...")
+        with open(trust_file, "r") as f:
+            trust_data = json.load(f)
 
-        for peer in targets:
-            print(f"[*] Syncing namespace upstream to: {peer}...")
+        delegates = list(trust_data.get("delegates", {}).values())
+
+        if not delegates:
+            print("[-] No upstream delegates found in constitution.")
+            return
+
+        print(
+            f"[*] Synchronizing local state upstream to {len(delegates)} official Delegate(s)..."
+        )
+        for peer in delegates:
+            self._push_namespace(my_peer_id, peer)
+
+    def broadcast(self):
+        """Pushes finalized canonical state and network gossip downstream."""
+        book = self._read_address_book()
+        contributors = book.get("downstream_nodes", [])
+
+        if not contributors:
+            print("[-] No downstream contributors found in Address Book.")
+            return
+
+        print(
+            f"[*] Broadcasting network gossip downstream to {len(contributors)} Contributor(s)..."
+        )
+        for peer in contributors:
             try:
+                # THE GOSSIP PROTOCOL:
+                # Instead of just pushing our own namespace, we relay ALL known
+                # Delegate namespaces (*:*) to keep the downstream node fully informed.
                 self.git.run_with_output(
                     [
                         "push",
+                        "--force",
                         f"ssh://root@{peer}/app/storage",
-                        f"refs/heads/*:refs/namespaces/{my_peer_id}/heads/*",
+                        "refs/namespaces/*:refs/namespaces/*",
                     ]
                 )
-                print(f"[+] Successfully synchronized state with {peer}.")
+                print(f"[+] Successfully gossiped full network state to {peer}.")
             except Exception as e:
-                print(f"[-] Sync to {peer} failed. Error: {e}")
+                print(f"[-] Broadcast to {peer} failed. Error: {e}")
