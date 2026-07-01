@@ -8,17 +8,14 @@ class ConsensusEngine:
         self.git = git_engine
         self.identity = identity_manager
 
-    def _evaluate_branch(
-        self, namespace_suffix, canonical_ref, delegates, threshold, branch_type="code"
-    ):
-        """Generic helper to tally votes for any P2P branch."""
+    def _calculate_quorum(self, namespace_suffix, delegates, threshold):
+        """Tally votes for a specific branch suffix and return the winning hash if quorum is met."""
         vote_tally = {}
 
-        # 1. Collect votes from Delegates' isolated namespaces
         for pub_key, name in delegates.items():
-            safe_namespace = hashlib.sha256(pub_key.encode()).hexdigest()[:20]
-
+            safe_namespace = hashlib.sha256(pub_key.encode()).hexdigest()
             target_branch = f"refs/namespaces/{safe_namespace}/{namespace_suffix}"
+
             commit_hash = self.git.run_with_output(
                 ["rev-parse", "--quiet", "--verify", target_branch]
             )
@@ -29,36 +26,14 @@ class ConsensusEngine:
             else:
                 print(f"    - Delegate '{name}' has no vote registered.")
 
-        # 2. Determine if Quorum is reached
-        consensus_hash = None
         for commit, count in vote_tally.items():
             if count >= threshold:
-                consensus_hash = commit
-                break
+                return commit
 
-        # 3. Apply the Consensus
-        if consensus_hash:
-            current_canonical = self.git.run_with_output(
-                ["rev-parse", "--quiet", "--verify", canonical_ref]
-            )
-
-            if current_canonical == consensus_hash:
-                print(
-                    f"[*] {branch_type.capitalize()} state is already aligned with consensus. No changes made."
-                )
-                return False
-            else:
-                print(
-                    f"[+] QUORUM REACHED! Fast-forwarding canonical {branch_type} to {consensus_hash[:7]}..."
-                )
-                self.git.run_quiet(["update-ref", canonical_ref, consensus_hash])
-                return True
-        else:
-            print(f"[-] No quorum reached for {branch_type}.")
-            return False
+        return None
 
     def evaluate(self):
-        """Calculates canonical state based on Web of Trust rules."""
+        """Calculates and applies canonical state based on Web of Trust rules."""
         print("[*] Starting Local Consensus Evaluation...\n")
 
         if not os.path.exists(self.identity.trust_file_path):
@@ -79,7 +54,7 @@ class ConsensusEngine:
         # --- PHASE 1: GOVERNANCE EVALUATION (Owner Authority) ---
         print("[*] Evaluating Governance Proposals (meta/identity)...")
         if owner_pub_key:
-            owner_namespace = hashlib.sha256(owner_pub_key.encode()).hexdigest()[:20]
+            owner_namespace = hashlib.sha256(owner_pub_key.encode()).hexdigest()
             owner_gov_ref = f"refs/namespaces/{owner_namespace}/meta/identity"
 
             owner_hash = self.git.run_with_output(
@@ -94,7 +69,7 @@ class ConsensusEngine:
                     f"[+] Owner Authority signature verified. Fast-forwarding constitution to {owner_hash[:7]}..."
                 )
                 self.git.run_quiet(["update-ref", "refs/meta/identity", owner_hash])
-                self.git.extract_trust_anchor()
+                self.git.extract_trust_anchor(self.identity.trust_file_path)
                 print("[!] The rules of consensus have changed. Halting evaluation.")
                 print(
                     "[!] Please re-run 'peerp consensus' to evaluate code under the new rules."
@@ -109,28 +84,44 @@ class ConsensusEngine:
 
         # --- PHASE 2: CODE EVALUATION (Multi-Sig Quorum) ---
         print("\n[*] Evaluating Code Commits (heads/main)...")
-        code_updated = self._evaluate_branch(
-            "heads/main", "refs/heads/main", delegates, threshold, "code"
-        )
+        consensus_hash = self._calculate_quorum("heads/main", delegates, threshold)
 
-        if code_updated:
-            # 1. Check if the working directory is clean
-            status = self.git.run_with_output(["status", "--porcelain"])
+        if consensus_hash:
+            current_canonical = self.git.run_with_output(
+                ["rev-parse", "--quiet", "--verify", "refs/heads/main"]
+            )
 
-            if status:
-                print("\n[-] ⚠️  CONSENSUS REACHED, BUT WORKING DIRECTORY IS DIRTY.")
+            if current_canonical == consensus_hash:
                 print(
-                    "[-] You have uncommitted changes. To update your working directory to the"
+                    "[*] Code state is already aligned with consensus. No changes made."
                 )
+            else:
                 print(
-                    "[-] new canonical state, please 'commit' or 'stash' your changes first."
+                    f"[+] QUORUM REACHED! Target canonical code is {consensus_hash[:7]}..."
                 )
-                print("[-] Then run 'peerp consensus' again to perform the checkout.\n")
-                return  # Stop here, do not perform the forced checkout
 
-            # 2. If clean, perform the safe update
-            self.git.run_quiet(["checkout", "main", "--force"])
-            print("[+] Working directory successfully updated with new canonical code.")
+                # 1. Check if dirty BEFORE moving any pointers
+                status = self.git.run_with_output(["status", "--porcelain"])
+                if status:
+                    print("\n[-] ⚠️  CONSENSUS REACHED, BUT WORKING DIRECTORY IS DIRTY.")
+                    print(
+                        "[-] You have uncommitted changes. To update your working directory to the"
+                    )
+                    print(
+                        "[-] new canonical state, please 'commit' or 'stash' your changes first."
+                    )
+                    print(
+                        "[-] Then run 'peerp consensus' again to perform the checkout.\n"
+                    )
+                    return
+
+                # 2. Safely apply changes and update working directory simultaneously
+                self.git.run_quiet(["reset", "--hard", consensus_hash])
+                print(
+                    "[+] Working directory successfully updated with new canonical code."
+                )
+        else:
+            print("[-] No quorum reached for code.")
 
     def has_pending_governance(self):
         """Checks if there are un-evaluated constitution updates from the Owner."""
@@ -144,10 +135,9 @@ class ConsensusEngine:
         if not owner_pub_key:
             return False
 
-        owner_namespace = hashlib.sha256(owner_pub_key.encode()).hexdigest()[:20]
+        owner_namespace = hashlib.sha256(owner_pub_key.encode()).hexdigest()
         owner_gov_ref = f"refs/namespaces/{owner_namespace}/meta/identity"
 
-        # Check what the owner's branch says vs our current canonical branch
         owner_hash = self.git.run_with_output(
             ["rev-parse", "--quiet", "--verify", owner_gov_ref]
         )
@@ -155,7 +145,6 @@ class ConsensusEngine:
             ["rev-parse", "--quiet", "--verify", "refs/meta/identity"]
         )
 
-        # If the owner has a new hash we haven't evaluated, return True
         if owner_hash and owner_hash != current_gov_hash:
             return True
 

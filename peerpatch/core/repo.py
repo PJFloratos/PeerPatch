@@ -70,20 +70,19 @@ class GitEngine:
         except subprocess.CalledProcessError:
             pass
 
-    def commit_trust_anchor(self, peer_id=None):
+    def commit_trust_anchor(self, trust_file_path, peer_id=None):
         """Uses Git plumbing to commit trust.json to the meta branch or a namespace."""
-        trust_path = os.path.join(self.repo_dir, ".peerpatch/trust.json")
-        if not os.path.exists(trust_path):
+        if not os.path.exists(trust_file_path):
             return
 
-        target_ref = "refs/meta/identity"
-        if peer_id:
-            # Commit to the user's isolated governance namespace
-            target_ref = f"refs/namespaces/{peer_id}/meta/identity"
-
+        target_ref = (
+            f"refs/namespaces/{peer_id}/meta/identity"
+            if peer_id
+            else "refs/meta/identity"
+        )
         print(f"[*] Committing Trust Anchor to {target_ref}...")
         try:
-            blob_hash = self.run_with_output(["hash-object", "-w", trust_path])
+            blob_hash = self.run_with_output(["hash-object", "-w", trust_file_path])
             tree_input = f"100644 blob {blob_hash}\ttrust.json\n"
 
             result = subprocess.run(
@@ -93,15 +92,13 @@ class GitEngine:
                 capture_output=True,
                 env=self.git_env,
             )
-            tree_hash = result.stdout.strip()
-
             commit_msg = (
-                "chore: Genesis Trust Anchor"
-                if not peer_id
-                else "govern: Trust Anchor Proposal"
+                "govern: Trust Anchor Proposal"
+                if peer_id
+                else "chore: Genesis Trust Anchor"
             )
             commit_hash = self.run_with_output(
-                ["commit-tree", tree_hash, "-m", commit_msg]
+                ["commit-tree", result.stdout.strip(), "-m", commit_msg]
             )
 
             self.run_quiet(["update-ref", target_ref, commit_hash])
@@ -109,17 +106,15 @@ class GitEngine:
         except Exception as e:
             print(f"[-] Failed to commit Trust Anchor: {e}")
 
-    def extract_trust_anchor(self):
+    def extract_trust_anchor(self, destination_path):
         """Extracts the network's trust.json from the hidden branch to the local disk."""
         try:
-            # Read the file directly from the Git database without checking it out
             trust_content = self.run_with_output(
                 ["cat-file", "blob", "refs/meta/identity:trust.json"]
             )
             if trust_content:
-                trust_path = os.path.join(self.repo_dir, ".peerpatch/trust.json")
-                os.makedirs(os.path.dirname(trust_path), exist_ok=True)
-                with open(trust_path, "w") as f:
+                os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+                with open(destination_path, "w") as f:
                     f.write(trust_content)
                 print("[+] Extracted Network Trust Anchor from Git DAG.")
         except Exception:

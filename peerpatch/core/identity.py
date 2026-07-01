@@ -32,7 +32,14 @@ class IdentityManager:
         with open(self.public_key_path, "r") as f:
             pub_key_str = f.read().strip()
 
-        return hashlib.sha256(pub_key_str.encode()).hexdigest()[:20]
+        return hashlib.sha256(pub_key_str.encode()).hexdigest()
+
+    def get_delegates(self):
+        """Helper to return the list of Delegate node names."""
+        if not os.path.exists(self.trust_file_path):
+            return []
+        with open(self.trust_file_path, "r") as f:
+            return list(json.load(f).get("delegates", {}).values())
 
     def _generate_keys(self):
         """Internal method to handle cryptographic generation."""
@@ -108,7 +115,7 @@ class IdentityManager:
         elif action == "remove_delegate" and pub_key:
             if pub_key in trust_data["delegates"]:
                 del trust_data["delegates"][pub_key]
-                print(f"[*] Proposed removing Delegate: {pub_key[:15]}...")
+                print(f"[*] Proposed removing Delegate: {pub_key}...")
         else:
             print("[-] Invalid governance action.")
             return False
